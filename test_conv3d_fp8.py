@@ -37,6 +37,7 @@ def main():
 
     input_bf16 = torch.randn(n, c, d, h, w, dtype=torch.bfloat16, device="cuda")
     weight_bf16 = torch.randn(k, c, kt, kh, kw, dtype=torch.bfloat16, device="cuda")
+    bias_bf16 = torch.randn(k, dtype=torch.bfloat16, device="cuda")
 
     input_fp8 = input_bf16.to(torch.float8_e4m3fn).to(memory_format=torch.channels_last_3d)
     weight_fp8 = weight_bf16.to(torch.float8_e4m3fn).to(memory_format=torch.channels_last_3d)
@@ -51,13 +52,14 @@ def main():
         padding=padding,
         stride=stride,
         dilation=dilation,
+        with_bias=True,
     )
 
     warmup_iters = 5
     with torch.no_grad():
         for _ in range(warmup_iters):
             with nvtx_range("warmup/conv3d_fp8_forward"):
-                output = op.forward(input_fp8, weight_fp8, descale_x, descale_w)
+                output = op.forward(input_fp8, weight_fp8, descale_x, descale_w, bias=bias_bf16)
     torch.cuda.synchronize()
 
     test_iters = 20
@@ -68,7 +70,7 @@ def main():
             end_event = torch.cuda.Event(enable_timing=True)
             start_event.record()
             with nvtx_range("benchmark/conv3d_fp8_forward"):
-                output = op.forward(input_fp8, weight_fp8, descale_x, descale_w)
+                output = op.forward(input_fp8, weight_fp8, descale_x, descale_w, bias=bias_bf16)
             end_event.record()
             torch.cuda.synchronize()
             durations_ms.append(start_event.elapsed_time(end_event))

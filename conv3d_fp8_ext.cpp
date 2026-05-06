@@ -37,6 +37,7 @@ struct Conv3dFp8Context {
     int64_t out_h = 0;
     int64_t out_w = 0;
     int64_t device_index = 0;
+    bool with_bias = false;
 
     std::shared_ptr<fe::graph::Graph> graph;
     std::shared_ptr<fe::graph::Tensor_attributes> x_attr;
@@ -44,6 +45,7 @@ struct Conv3dFp8Context {
     std::shared_ptr<fe::graph::Tensor_attributes> y_attr;
     std::shared_ptr<fe::graph::Tensor_attributes> descale_x_attr;
     std::shared_ptr<fe::graph::Tensor_attributes> descale_w_attr;
+    std::shared_ptr<fe::graph::Tensor_attributes> bias_attr;
 
     cudnnHandle_t handle = nullptr;
     int64_t plan_index = 0;
@@ -126,6 +128,7 @@ std::pair<int64_t, int64_t> autotune_best_plan(const std::shared_ptr<Conv3dFp8Co
 
     auto descale_x = torch::ones({1, 1, 1, 1, 1}, scale_options);
     auto descale_w = torch::ones({1, 1, 1, 1, 1}, scale_options);
+    auto bias = torch::zeros({1, ctx->k, 1, 1, 1}, y_options);
 
     std::unordered_map<std::shared_ptr<fe::graph::Tensor_attributes>, void*> variant_pack = {
         {ctx->x_attr, x.data_ptr()},
@@ -134,6 +137,9 @@ std::pair<int64_t, int64_t> autotune_best_plan(const std::shared_ptr<Conv3dFp8Co
         {ctx->descale_x_attr, descale_x.data_ptr()},
         {ctx->descale_w_attr, descale_w.data_ptr()},
     };
+    if (ctx->with_bias) {
+        variant_pack.emplace(ctx->bias_attr, bias.data_ptr());
+    }
 
     const auto stream = at::cuda::getCurrentCUDAStream(static_cast<int>(ctx->device_index)).stream();
     check_cudnn(cudnnSetStream(ctx->handle, stream), "cudnnSetStream(autotune)");
@@ -202,7 +208,8 @@ int64_t conv3d_fp8_init(
     int64_t device_index,
     std::vector<int64_t> padding,
     std::vector<int64_t> stride,
-    std::vector<int64_t> dilation) {
+    std::vector<int64_t> dilation,
+    bool with_bias) {
     int device_count = 0;
     cudaError_t device_count_error = cudaGetDeviceCount(&device_count);
     if (device_count_error != cudaSuccess) {
@@ -225,6 +232,7 @@ int64_t conv3d_fp8_init(
     ctx->h = x_shape[3];
     ctx->w = x_shape[4];
     ctx->device_index = device_index;
+    ctx->with_bias = with_bias;
 
     ctx->k = w_shape[0];
     if (w_shape[1] != ctx->c) {
@@ -288,22 +296,22 @@ int64_t conv3d_fp8_init(
             .set_stride({1, 1, 1, 1, 1})
             .set_data_type(fe::DataType_t::FLOAT));
 
-    // ctx->bias_attr = ctx->graph->tensor(
-    //     fe::graph::Tensor_attributes()
-    //         .set_name("bias")
-    //         .set_dim({1, ctx->k, 1, 1, 1})
-    //         .set_stride({ctx->k, 1, ctx->k, ctx->k, ctx->k})
-    //         .set_data_type(fe::DataType_t::BFLOAT16));
-
     auto scale_options = fe::graph::Pointwise_attributes().set_mode(fe::PointwiseMode_t::MUL);
     auto after_descale_x = ctx->graph->pointwise(conv_output_fp8, ctx->descale_x_attr, scale_options);
     auto after_descale_w = ctx->graph->pointwise(after_descale_x, ctx->descale_w_attr, scale_options);
-    
-    // auto bias_options = fe::graph::Pointwise_attributes().set_mode(fe::PointwiseMode_t::ADD);
-    // auto bias_output  = graph->pointwise(after_descale_w, ctx->bias_attr, bias_options);
 
-    // ctx->y_attr = bias_output;
-    ctx->y_attr = after_descale_w;
+    if (ctx->with_bias) {
+        ctx->bias_attr = ctx->graph->tensor(
+            fe::graph::Tensor_attributes()
+                .set_name("bias")
+                .set_dim({1, ctx->k, 1, 1, 1})
+                .set_stride({ctx->k, 1, 1, 1, 1})
+                .set_data_type(fe::DataType_t::BFLOAT16));
+        auto bias_options = fe::graph::Pointwise_attributes().set_mode(fe::PointwiseMode_t::ADD);
+        ctx->y_attr = ctx->graph->pointwise(after_descale_w, ctx->bias_attr, bias_options);
+    } else {
+        ctx->y_attr = after_descale_w;
+    }
     ctx->y_attr->set_output(true).set_data_type(fe::DataType_t::BFLOAT16);
 
     // ctx->amax_attr = ctx->graph->reduction(
@@ -341,7 +349,8 @@ torch::Tensor conv3d_fp8_forward(
     const torch::Tensor& x,
     const torch::Tensor& w,
     const torch::Tensor& descale_x,
-    const torch::Tensor& descale_w) {
+    const torch::Tensor& descale_w,
+    const c10::optional<torch::Tensor>& bias) {
     auto ctx = get_context_or_throw(handle_id);
     if (!x.is_cuda() || !w.is_cuda() || !descale_x.is_cuda() || !descale_w.is_cuda()) {
         throw std::invalid_argument("All tensors passed to conv3d_fp8.forward must be CUDA tensors.");
@@ -359,6 +368,27 @@ torch::Tensor conv3d_fp8_forward(
     if (w.size(0) != ctx->k || w.size(1) != ctx->c || w.size(2) != ctx->t || w.size(3) != ctx->r || w.size(4) != ctx->s) {
         throw std::invalid_argument("w shape does not match the shape used during init.");
     }
+    c10::optional<torch::Tensor> bias_contiguous;
+    if (ctx->with_bias) {
+        if (!bias.has_value()) {
+            throw std::invalid_argument("bias must be provided when op is initialized with with_bias=True.");
+        }
+        if (!bias->is_cuda()) {
+            throw std::invalid_argument("bias must be a CUDA tensor.");
+        }
+        if (bias->get_device() != ctx->device_index) {
+            throw std::invalid_argument("bias must be on the init device.");
+        }
+        if (bias->dim() != 1 || bias->size(0) != ctx->k) {
+            throw std::invalid_argument("bias shape must be [out_channels].");
+        }
+        if (bias->scalar_type() != torch::kBFloat16) {
+            throw std::invalid_argument("bias dtype must be torch.bfloat16.");
+        }
+        bias_contiguous = bias->contiguous();
+    } else if (bias.has_value()) {
+        throw std::invalid_argument("bias must be None when op is initialized with with_bias=False.");
+    }
 
     auto y = torch::empty(
         {ctx->n, ctx->k, ctx->out_d, ctx->out_h, ctx->out_w},
@@ -371,6 +401,9 @@ torch::Tensor conv3d_fp8_forward(
         {ctx->descale_x_attr, descale_x.data_ptr()},
         {ctx->descale_w_attr, descale_w.data_ptr()},
     };
+    if (ctx->with_bias) {
+        variant_pack.emplace(ctx->bias_attr, bias_contiguous->data_ptr());
+    }
 
     const auto stream = at::cuda::getCurrentCUDAStream(x.get_device()).stream();
     check_cudnn(cudnnSetStream(ctx->handle, stream), "cudnnSetStream(forward)");
@@ -398,8 +431,8 @@ void conv3d_fp8_destroy(int64_t handle_id) {
 }  // namespace
 
 TORCH_LIBRARY(conv3d_fp8, m) {
-    m.def("init(int[] x_shape, int[] w_shape, int device_index, int[] padding, int[] stride, int[] dilation) -> int");
-    m.def("forward(int handle_id, Tensor x, Tensor w, Tensor descale_x, Tensor descale_w) -> Tensor");
+    m.def("init(int[] x_shape, int[] w_shape, int device_index, int[] padding, int[] stride, int[] dilation, bool with_bias=False) -> int");
+    m.def("forward(int handle_id, Tensor x, Tensor w, Tensor descale_x, Tensor descale_w, Tensor? bias=None) -> Tensor");
     m.def("destroy(int handle_id) -> ()");
 }
 
@@ -419,5 +452,6 @@ PYBIND11_MODULE(conv3d_fp8_ext, m) {
         pybind11::arg("device_index"),
         pybind11::arg("padding"),
         pybind11::arg("stride"),
-        pybind11::arg("dilation"));
+        pybind11::arg("dilation"),
+        pybind11::arg("with_bias") = false);
 }

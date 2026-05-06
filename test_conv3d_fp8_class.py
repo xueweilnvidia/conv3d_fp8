@@ -11,7 +11,7 @@ def _require_cuda_fp8() -> None:
         raise RuntimeError("Current PyTorch does not expose float8_e4m3fn.")
 
 
-def _build_modules_and_input():
+def _build_modules_and_input(with_bias: bool):
     _require_cuda_fp8()
     torch.manual_seed(0)
 
@@ -33,7 +33,7 @@ def _build_modules_and_input():
         stride=stride,
         padding=padding,
         dilation=dilation,
-        bias=False,
+        bias=with_bias,
     ).to(dtype=torch.bfloat16, device=device)
     conv_ref.eval()
 
@@ -41,8 +41,8 @@ def _build_modules_and_input():
     return x, conv_ref, conv_fp8
 
 
-def run_conv3d_fp8_class_accuracy_check():
-    x, conv_ref, conv_fp8 = _build_modules_and_input()
+def run_conv3d_fp8_class_accuracy_check(with_bias: bool):
+    x, conv_ref, conv_fp8 = _build_modules_and_input(with_bias=with_bias)
 
     with torch.no_grad():
         y_fp8 = conv_fp8(x)
@@ -93,8 +93,8 @@ def _benchmark_ms(fn, iters: int = 30, warmup: int = 10) -> float:
     return sum(durations_ms) / len(durations_ms)
 
 
-def run_conv3d_fp8_class_perf_check():
-    x, conv_ref, conv_fp8 = _build_modules_and_input()
+def run_conv3d_fp8_class_perf_check(with_bias: bool):
+    x, conv_ref, conv_fp8 = _build_modules_and_input(with_bias=with_bias)
 
     fp8_ms = _benchmark_ms(lambda: conv_fp8(x))
     ref_ms = _benchmark_ms(lambda: conv_ref(x))
@@ -108,7 +108,16 @@ def run_conv3d_fp8_class_perf_check():
 
 
 def test_conv3d_fp8_class_accuracy():
-    max_abs, mean_abs, _, mean_rel = run_conv3d_fp8_class_accuracy_check()
+    max_abs, mean_abs, _, mean_rel = run_conv3d_fp8_class_accuracy_check(with_bias=False)
+
+    # FP8 quantization introduces visible numeric differences; keep thresholds practical.
+    assert max_abs < 2.0, f"max_abs too large: {max_abs}"
+    assert mean_abs < 0.2, f"mean_abs too large: {mean_abs}"
+    assert mean_rel < 0.2, f"mean_rel too large: {mean_rel}"
+
+
+def test_conv3d_fp8_class_accuracy_with_bias():
+    max_abs, mean_abs, _, mean_rel = run_conv3d_fp8_class_accuracy_check(with_bias=True)
 
     # FP8 quantization introduces visible numeric differences; keep thresholds practical.
     assert max_abs < 2.0, f"max_abs too large: {max_abs}"
@@ -117,15 +126,17 @@ def test_conv3d_fp8_class_accuracy():
 
 
 def test_conv3d_fp8_class_performance():
-    fp8_ms, ref_ms, _ = run_conv3d_fp8_class_perf_check()
+    # Keep one perf path to control test runtime; accuracy tests cover both bias modes.
+    fp8_ms, ref_ms, _ = run_conv3d_fp8_class_perf_check(with_bias=True)
 
     assert fp8_ms > 0.0
     assert ref_ms > 0.0
 
 
 def main():
-    run_conv3d_fp8_class_accuracy_check()
-    run_conv3d_fp8_class_perf_check()
+    run_conv3d_fp8_class_accuracy_check(with_bias=False)
+    run_conv3d_fp8_class_accuracy_check(with_bias=True)
+    run_conv3d_fp8_class_perf_check(with_bias=True)
 
 
 if __name__ == "__main__":

@@ -13,12 +13,11 @@ class Conv3dFp8(nn.Module):
         super().__init__()
         if not isinstance(module, nn.Conv3d):
             raise TypeError(f"module must be nn.Conv3d, got {type(module).__name__}")
-        if module.bias is not None:
-            raise ValueError("Conv3dFp8 currently supports only Conv3d without bias.")
         if module.groups != 1:
             raise ValueError("Conv3dFp8 currently supports only groups=1 Conv3d.")
 
         self.module = module
+        self._with_bias = module.bias is not None
         self.padding: Tuple[int, int, int] = tuple(int(v) for v in module.padding)
         self.stride: Tuple[int, int, int] = tuple(int(v) for v in module.stride)
         self.dilation: Tuple[int, int, int] = tuple(int(v) for v in module.dilation)
@@ -77,6 +76,7 @@ class Conv3dFp8(nn.Module):
             padding=self.padding,
             stride=self.stride,
             dilation=self.dilation,
+            with_bias=self._with_bias,
         )
         self._cached_x_shape = x_shape
         self._cached_weight_shape = w_shape
@@ -101,5 +101,11 @@ class Conv3dFp8(nn.Module):
 
         self._ensure_op(x_shape, w_shape, x_fp8.device.index)
         assert self._op is not None
-
-        return self._op.forward(x_fp8, w_fp8, descale_x, descale_w)
+        bias = self.module.bias
+        if self._with_bias:
+            assert bias is not None
+            if bias.dim() != 1 or int(bias.shape[0]) != int(w_fp8.shape[0]):
+                raise ValueError("module.bias must have shape (out_channels,).")
+            if bias.device != x_fp8.device or bias.dtype != torch.bfloat16:
+                bias = bias.to(device=x_fp8.device, dtype=torch.bfloat16)
+        return self._op.forward(x_fp8, w_fp8, descale_x, descale_w, bias)
