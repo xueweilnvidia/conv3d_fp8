@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 
-import conv3d_fp8
+import conv3d_fp8_op
 
 
 def run_conv3d_fp8_accuracy_check():
@@ -29,7 +29,7 @@ def run_conv3d_fp8_accuracy_check():
     descale_w = torch.ones(1, 1, 1, 1, 1, dtype=torch.float32, device=device)
     scale_y = torch.ones(1, 1, 1, 1, 1, dtype=torch.float32, device=device)
 
-    op = conv3d_fp8.init(
+    op = conv3d_fp8_op.init(
         x_shape=input_fp8.shape,
         w_shape=weight_fp8.shape,
         device_index=torch.cuda.current_device(),

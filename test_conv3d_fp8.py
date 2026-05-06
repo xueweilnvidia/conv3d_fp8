@@ -1,7 +1,7 @@
 import torch
 from contextlib import contextmanager
 
-import conv3d_fp8
+import conv3d_fp8_op
 
 
 # torch.backends.cudnn.enabled = True
@@ -45,7 +45,7 @@ def main():
     descale_w = torch.ones(1, 1, 1, 1, 1, dtype=torch.float32, device="cuda")
     scale_y = torch.ones(1, 1, 1, 1, 1, dtype=torch.float32, device="cuda")
 
-    op = conv3d_fp8.init(
+    op = conv3d_fp8_op.init(
         x_shape=input_fp8.shape,
         w_shape=weight_fp8.shape,
         device_index=torch.cuda.current_device(),
