@@ -37,7 +37,10 @@ if "nvrtc" not in libraries:
 
 
 setup(
-    name="conv3d_fp8_ext",
+    name="conv3d-fp8",
+    version="0.1.0",
+    description="Conv3d FP8 wrapper and CUDA extension",
+    py_modules=["conv3d_fp8", "conv3d_fp8_op"],
     ext_modules=[
         CUDAExtension(
             name="conv3d_fp8_ext",

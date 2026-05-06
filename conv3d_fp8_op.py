@@ -24,9 +24,14 @@ try:
     import conv3d_fp8_ext  # noqa: F401
 except ImportError as exc:
     raise ImportError(
-        "conv3d_fp8_ext is not built yet. Please run:\n"
-        "  cd /home/scratch.xueweil_sw/tmp/Conv3D_perf\n"
-        "  python setup_conv3d_fp8.py build_ext --inplace"
+        "Failed to import conv3d_fp8_ext. This is usually caused by either:\n"
+        "1) extension not built, or\n"
+        "2) ABI mismatch between the built extension and current torch/cuda runtime.\n\n"
+        "Try rebuilding in the current environment:\n"
+        "  cd <project_root>\n"
+        "  rm -rf build *.egg-info *.so\n"
+        "  pip install -e . --no-build-isolation\n\n"
+        f"Original import error: {exc}"
     ) from exc
 
 
@@ -43,7 +48,6 @@ class Conv3dFp8Op:
         w: torch.Tensor,
         descale_x: torch.Tensor,
         descale_w: torch.Tensor,
-        scale_y: torch.Tensor,
     ) -> torch.Tensor:
         if not x.is_cuda or not w.is_cuda:
             raise ValueError("x and w must be CUDA tensors.")
@@ -52,7 +56,7 @@ class Conv3dFp8Op:
 
         x_cl = x.to(memory_format=torch.channels_last_3d)
         w_cl = w.to(memory_format=torch.channels_last_3d)
-        return torch.ops.conv3d_fp8.forward(self._handle_id, x_cl, w_cl, descale_x, descale_w, scale_y)
+        return torch.ops.conv3d_fp8.forward(self._handle_id, x_cl, w_cl, descale_x, descale_w)
 
     def __del__(self) -> None:
         try:

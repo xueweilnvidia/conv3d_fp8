@@ -43,7 +43,6 @@ def main():
 
     descale_x = torch.ones(1, 1, 1, 1, 1, dtype=torch.float32, device="cuda")
     descale_w = torch.ones(1, 1, 1, 1, 1, dtype=torch.float32, device="cuda")
-    scale_y = torch.ones(1, 1, 1, 1, 1, dtype=torch.float32, device="cuda")
 
     op = conv3d_fp8_op.init(
         x_shape=input_fp8.shape,
@@ -58,7 +57,7 @@ def main():
     with torch.no_grad():
         for _ in range(warmup_iters):
             with nvtx_range("warmup/conv3d_fp8_forward"):
-                output = op.forward(input_fp8, weight_fp8, descale_x, descale_w, scale_y)
+                output = op.forward(input_fp8, weight_fp8, descale_x, descale_w)
     torch.cuda.synchronize()
 
     test_iters = 20
@@ -69,7 +68,7 @@ def main():
             end_event = torch.cuda.Event(enable_timing=True)
             start_event.record()
             with nvtx_range("benchmark/conv3d_fp8_forward"):
-                output = op.forward(input_fp8, weight_fp8, descale_x, descale_w, scale_y)
+                output = op.forward(input_fp8, weight_fp8, descale_x, descale_w)
             end_event.record()
             torch.cuda.synchronize()
             durations_ms.append(start_event.elapsed_time(end_event))

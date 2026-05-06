@@ -27,7 +27,6 @@ def run_conv3d_fp8_accuracy_check():
 
     descale_x = torch.ones(1, 1, 1, 1, 1, dtype=torch.float32, device=device)
     descale_w = torch.ones(1, 1, 1, 1, 1, dtype=torch.float32, device=device)
-    scale_y = torch.ones(1, 1, 1, 1, 1, dtype=torch.float32, device=device)
 
     op = conv3d_fp8_op.init(
         x_shape=input_fp8.shape,
@@ -39,7 +38,7 @@ def run_conv3d_fp8_accuracy_check():
     )
 
     with torch.no_grad():
-        y_fp8 = op.forward(input_fp8, weight_fp8, descale_x, descale_w, scale_y)
+        y_fp8 = op.forward(input_fp8, weight_fp8, descale_x, descale_w)
         y_ref = F.conv3d(
             input_fp8.to(torch.bfloat16),
             weight_fp8.to(torch.bfloat16),

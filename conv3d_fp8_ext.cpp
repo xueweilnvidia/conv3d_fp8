@@ -44,7 +44,6 @@ struct Conv3dFp8Context {
     std::shared_ptr<fe::graph::Tensor_attributes> y_attr;
     std::shared_ptr<fe::graph::Tensor_attributes> descale_x_attr;
     std::shared_ptr<fe::graph::Tensor_attributes> descale_w_attr;
-    std::shared_ptr<fe::graph::Tensor_attributes> scale_y_attr;
 
     cudnnHandle_t handle = nullptr;
     int64_t plan_index = 0;
@@ -127,7 +126,6 @@ std::pair<int64_t, int64_t> autotune_best_plan(const std::shared_ptr<Conv3dFp8Co
 
     auto descale_x = torch::ones({1, 1, 1, 1, 1}, scale_options);
     auto descale_w = torch::ones({1, 1, 1, 1, 1}, scale_options);
-    auto scale_y = torch::ones({1, 1, 1, 1, 1}, scale_options);
 
     std::unordered_map<std::shared_ptr<fe::graph::Tensor_attributes>, void*> variant_pack = {
         {ctx->x_attr, x.data_ptr()},
@@ -135,7 +133,6 @@ std::pair<int64_t, int64_t> autotune_best_plan(const std::shared_ptr<Conv3dFp8Co
         {ctx->y_attr, y.data_ptr()},
         {ctx->descale_x_attr, descale_x.data_ptr()},
         {ctx->descale_w_attr, descale_w.data_ptr()},
-        {ctx->scale_y_attr, scale_y.data_ptr()},
     };
 
     const auto stream = at::cuda::getCurrentCUDAStream(static_cast<int>(ctx->device_index)).stream();
@@ -291,17 +288,22 @@ int64_t conv3d_fp8_init(
             .set_stride({1, 1, 1, 1, 1})
             .set_data_type(fe::DataType_t::FLOAT));
 
-    ctx->scale_y_attr = ctx->graph->tensor(
-        fe::graph::Tensor_attributes()
-            .set_name("scale_y")
-            .set_dim({1, 1, 1, 1, 1})
-            .set_stride({1, 1, 1, 1, 1})
-            .set_data_type(fe::DataType_t::FLOAT));
+    // ctx->bias_attr = ctx->graph->tensor(
+    //     fe::graph::Tensor_attributes()
+    //         .set_name("bias")
+    //         .set_dim({1, ctx->k, 1, 1, 1})
+    //         .set_stride({ctx->k, 1, ctx->k, ctx->k, ctx->k})
+    //         .set_data_type(fe::DataType_t::BFLOAT16));
 
     auto scale_options = fe::graph::Pointwise_attributes().set_mode(fe::PointwiseMode_t::MUL);
     auto after_descale_x = ctx->graph->pointwise(conv_output_fp8, ctx->descale_x_attr, scale_options);
     auto after_descale_w = ctx->graph->pointwise(after_descale_x, ctx->descale_w_attr, scale_options);
-    ctx->y_attr = ctx->graph->pointwise(after_descale_w, ctx->scale_y_attr, scale_options);
+    
+    // auto bias_options = fe::graph::Pointwise_attributes().set_mode(fe::PointwiseMode_t::ADD);
+    // auto bias_output  = graph->pointwise(after_descale_w, ctx->bias_attr, bias_options);
+
+    // ctx->y_attr = bias_output;
+    ctx->y_attr = after_descale_w;
     ctx->y_attr->set_output(true).set_data_type(fe::DataType_t::BFLOAT16);
 
     // ctx->amax_attr = ctx->graph->reduction(
@@ -339,14 +341,13 @@ torch::Tensor conv3d_fp8_forward(
     const torch::Tensor& x,
     const torch::Tensor& w,
     const torch::Tensor& descale_x,
-    const torch::Tensor& descale_w,
-    const torch::Tensor& scale_y) {
+    const torch::Tensor& descale_w) {
     auto ctx = get_context_or_throw(handle_id);
-    if (!x.is_cuda() || !w.is_cuda() || !descale_x.is_cuda() || !descale_w.is_cuda() || !scale_y.is_cuda()) {
+    if (!x.is_cuda() || !w.is_cuda() || !descale_x.is_cuda() || !descale_w.is_cuda()) {
         throw std::invalid_argument("All tensors passed to conv3d_fp8.forward must be CUDA tensors.");
     }
     if (x.get_device() != ctx->device_index || w.get_device() != ctx->device_index || descale_x.get_device() != ctx->device_index ||
-        descale_w.get_device() != ctx->device_index || scale_y.get_device() != ctx->device_index) {
+        descale_w.get_device() != ctx->device_index) {
         throw std::invalid_argument("All tensors passed to conv3d_fp8.forward must be on the init device.");
     }
     if (x.dim() != 5 || w.dim() != 5) {
@@ -369,7 +370,6 @@ torch::Tensor conv3d_fp8_forward(
         {ctx->y_attr, y.data_ptr()},
         {ctx->descale_x_attr, descale_x.data_ptr()},
         {ctx->descale_w_attr, descale_w.data_ptr()},
-        {ctx->scale_y_attr, scale_y.data_ptr()},
     };
 
     const auto stream = at::cuda::getCurrentCUDAStream(x.get_device()).stream();
@@ -399,7 +399,7 @@ void conv3d_fp8_destroy(int64_t handle_id) {
 
 TORCH_LIBRARY(conv3d_fp8, m) {
     m.def("init(int[] x_shape, int[] w_shape, int device_index, int[] padding, int[] stride, int[] dilation) -> int");
-    m.def("forward(int handle_id, Tensor x, Tensor w, Tensor descale_x, Tensor descale_w, Tensor scale_y) -> Tensor");
+    m.def("forward(int handle_id, Tensor x, Tensor w, Tensor descale_x, Tensor descale_w) -> Tensor");
     m.def("destroy(int handle_id) -> ()");
 }
 
