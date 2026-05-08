@@ -90,7 +90,7 @@ def run_conv3d_fp8_accuracy_check_with_bias():
 
     input_bf16 = torch.randn(n, c, d, h, w, dtype=torch.bfloat16, device=device)
     weight_bf16 = torch.randn(k, c, kt, kh, kw, dtype=torch.bfloat16, device=device)
-    bias_bf16 = torch.randn(k, dtype=torch.bfloat16, device=device)*100.0
+    bias_bf16 = (torch.randn(k, dtype=torch.bfloat16, device=device) + 50 )* 100.0
 
     input_fp8 = input_bf16.to(torch.float8_e4m3fn).to(memory_format=torch.channels_last_3d)
     weight_fp8 = weight_bf16.to(torch.float8_e4m3fn).to(memory_format=torch.channels_last_3d)

@@ -16,21 +16,30 @@ class Conv3dFp8(nn.Module):
         if module.groups != 1:
             raise ValueError("Conv3dFp8 currently supports only groups=1 Conv3d.")
 
-        self.module = module
         self._with_bias = module.bias is not None
         self.padding: Tuple[int, int, int] = tuple(int(v) for v in module.padding)
         self.stride: Tuple[int, int, int] = tuple(int(v) for v in module.stride)
         self.dilation: Tuple[int, int, int] = tuple(int(v) for v in module.dilation)
 
+        # Own copies of weight/bias so Conv3dFp8 has no back-reference to the
+        # source module. This lets callers attach Conv3dFp8 as a submodule of
+        # the original Conv3d subclass (e.g. WanCausalConv3d) without forming
+        # an nn.Module cycle that would blow up `model.to(...)`.
+        self.weight = nn.Parameter(module.weight.detach().clone(), requires_grad=False)
+        if self._with_bias:
+            self.bias = nn.Parameter(module.bias.detach().clone(), requires_grad=False)
+        else:
+            self.register_parameter("bias", None)
+
         self._op: Optional[conv3d_fp8_op.Conv3dFp8Op] = None
         self._cached_x_shape: Optional[Tuple[int, int, int, int, int]] = None
-        self._cached_weight_shape: Tuple[int, int, int, int, int] = tuple(int(v) for v in module.weight.shape)
+        self._cached_weight_shape: Tuple[int, int, int, int, int] = tuple(int(v) for v in self.weight.shape)
         self._cached_weight_fp8: Optional[torch.Tensor] = None
         self._cached_descale_w: Optional[torch.Tensor] = None
 
     def _get_weight_fp8_cached(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         if self._cached_weight_fp8 is None:
-            weight = self.module.weight
+            weight = self.weight
             if weight.device != device:
                 weight = weight.to(device)
 
@@ -82,6 +91,7 @@ class Conv3dFp8(nn.Module):
         self._cached_weight_shape = w_shape
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # print("fp8 conv3d forward")
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor.")
         if x.dtype != torch.bfloat16:
@@ -101,11 +111,11 @@ class Conv3dFp8(nn.Module):
 
         self._ensure_op(x_shape, w_shape, x_fp8.device.index)
         assert self._op is not None
-        bias = self.module.bias
+        bias = self.bias
         if self._with_bias:
             assert bias is not None
             if bias.dim() != 1 or int(bias.shape[0]) != int(w_fp8.shape[0]):
-                raise ValueError("module.bias must have shape (out_channels,).")
+                raise ValueError("bias must have shape (out_channels,).")
             if bias.device != x_fp8.device or bias.dtype != torch.bfloat16:
                 bias = bias.to(device=x_fp8.device, dtype=torch.bfloat16)
         return self._op.forward(x_fp8, w_fp8, descale_x, descale_w, bias)
