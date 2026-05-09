@@ -5,6 +5,8 @@ from typing import Iterable, Optional, Tuple
 
 import torch
 
+import nvtx
+
 
 def _normalize_3tuple(value: Iterable[int], name: str) -> Tuple[int, int, int]:
     value = tuple(int(v) for v in value)
@@ -43,6 +45,7 @@ class Conv3dFp8Op:
     _dilation: Tuple[int, int, int]
     _with_bias: bool
 
+    @nvtx.annotate(message="Conv3dFp8Op.forward")
     def forward(
         self,
         x: torch.Tensor,

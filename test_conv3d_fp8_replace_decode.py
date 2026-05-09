@@ -27,12 +27,17 @@ from typing import Tuple
 import torch
 from diffusers import AutoencoderKLWan
 
+import nvtx
+
 # Allow importing the conv3d_fp8 package without a system install.
 # _DEFAULT_CONV3D_FP8_PATH = os.environ.get("CONV3D_FP8_PATH", "/workdir/tmp/conv3d_fp8")
 # if os.path.isdir(_DEFAULT_CONV3D_FP8_PATH) and _DEFAULT_CONV3D_FP8_PATH not in sys.path:
 #     sys.path.insert(0, _DEFAULT_CONV3D_FP8_PATH)
 
 from conv3d_fp8_replace import replace_conv3d_with_fp8  # noqa: E402
+
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
 
 
 def parse_shape(shape_str: str) -> Tuple[int, ...]:
@@ -63,7 +68,8 @@ def _require_cuda_fp8() -> None:
 
 def decode_once(vae: AutoencoderKLWan, latents: torch.Tensor) -> torch.Tensor:
     with torch.no_grad():
-        out = vae.decode(latents, return_dict=False)[0]
+        with nvtx.annotate("decode_once"):
+            out = vae.decode(latents, return_dict=False)[0]
     return out
 
 
@@ -118,6 +124,13 @@ def run_compare(
 
     print("\n== Baseline decode (original nn.Conv3d) ==")
     y_ref = decode_once(vae, latents)
+
+
+    # torch.cuda.cudart().cudaProfilerStart()
+    # for i in range(2):
+    #     y_ref = decode_once(vae, latents)
+    #     print("decode bf16")
+    # torch.cuda.cudart().cudaProfilerStop()
     # Move baseline to CPU to free GPU memory before the FP8 path runs.
     y_ref_cpu = y_ref.detach().to("cpu")
     del y_ref
@@ -135,6 +148,13 @@ def run_compare(
     print("\n== FP8 decode (after replacement) ==")
     y_fp8 = decode_once(vae, latents)
     print(f"output shape: {tuple(y_fp8.shape)}, dtype: {y_fp8.dtype}")
+
+    torch.cuda.cudart().cudaProfilerStart()
+    for i in range(2):
+        y_fp8 = decode_once(vae, latents)
+        print("decode")
+
+    torch.cuda.cudart().cudaProfilerStop()
 
     print("\n== Accuracy diff (fp8 vs baseline) ==")
     y_ref_dev = y_ref_cpu.to(y_fp8.device)

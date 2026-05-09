@@ -5,6 +5,8 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 
+import nvtx
+
 import conv3d_fp8_op
 
 
@@ -32,6 +34,10 @@ class Conv3dFp8(nn.Module):
             self.register_parameter("bias", None)
 
         self._op: Optional[conv3d_fp8_op.Conv3dFp8Op] = None
+        self._op_cache: dict[
+            tuple[Tuple[int, int, int, int, int], Tuple[int, int, int, int, int], int],
+            conv3d_fp8_op.Conv3dFp8Op,
+        ] = {}
         self._cached_x_shape: Optional[Tuple[int, int, int, int, int]] = None
         self._cached_weight_shape: Tuple[int, int, int, int, int] = tuple(int(v) for v in self.weight.shape)
         self._cached_weight_fp8: Optional[torch.Tensor] = None
@@ -41,8 +47,8 @@ class Conv3dFp8(nn.Module):
         if self._cached_weight_fp8 is None:
             weight = self.weight
             if weight.device != device:
-                weight = weight.to(device)
-
+                # weight = weight.to(device)
+                raise ValueError("weight must be on same device with input")
             weight_absmax = weight.abs().max()
             fp8_max = torch.tensor(torch.finfo(torch.float8_e4m3fn).max, dtype=weight.dtype, device=device)
             safe_absmax = torch.clamp(weight_absmax, min=torch.finfo(weight.dtype).eps)
@@ -68,6 +74,9 @@ class Conv3dFp8(nn.Module):
         x_scaled = x * x_scale
         x_fp8 = x_scaled.to(torch.float8_e4m3fn).to(memory_format=torch.channels_last_3d)
         descale_x = (safe_absmax / fp8_max).to(torch.float32).reshape(1, 1, 1, 1, 1)
+
+        # x_fp8 = x.to(torch.float8_e4m3fn)
+        # descale_x = torch.ones(1, 1, 1, 1, 1, dtype=torch.float32, device=x.device)
         return x_fp8, descale_x
 
     def _ensure_op(
@@ -76,20 +85,25 @@ class Conv3dFp8(nn.Module):
         w_shape: Tuple[int, int, int, int, int],
         device_index: int,
     ) -> None:
-        if self._op is not None and self._cached_x_shape == x_shape and self._cached_weight_shape == w_shape:
-            return
-        self._op = conv3d_fp8_op.init(
-            x_shape=x_shape,
-            w_shape=w_shape,
-            device_index=device_index,
-            padding=self.padding,
-            stride=self.stride,
-            dilation=self.dilation,
-            with_bias=self._with_bias,
-        )
+        cache_key = (x_shape, w_shape, int(device_index))
+        op = self._op_cache.get(cache_key)
+        if op is None:
+            # print("init op")
+            op = conv3d_fp8_op.init(
+                x_shape=x_shape,
+                w_shape=w_shape,
+                device_index=device_index,
+                padding=self.padding,
+                stride=self.stride,
+                dilation=self.dilation,
+                with_bias=self._with_bias,
+            )
+            self._op_cache[cache_key] = op
+        self._op = op
         self._cached_x_shape = x_shape
         self._cached_weight_shape = w_shape
 
+    @nvtx.annotate(message="Conv3dFp8.forward")
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # print("fp8 conv3d forward")
         if not x.is_cuda:
@@ -117,5 +131,6 @@ class Conv3dFp8(nn.Module):
             if bias.dim() != 1 or int(bias.shape[0]) != int(w_fp8.shape[0]):
                 raise ValueError("bias must have shape (out_channels,).")
             if bias.device != x_fp8.device or bias.dtype != torch.bfloat16:
-                bias = bias.to(device=x_fp8.device, dtype=torch.bfloat16)
+                # bias = bias.to(device=x_fp8.device, dtype=torch.bfloat16)
+                raise ValueError("bias must have bfloat16 dtype and on same device with input")
         return self._op.forward(x_fp8, w_fp8, descale_x, descale_w, bias)

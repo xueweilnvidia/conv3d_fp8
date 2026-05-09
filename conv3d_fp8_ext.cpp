@@ -278,7 +278,8 @@ int64_t conv3d_fp8_init(
                             .set_padding(padding)
                             .set_stride(stride)
                             .set_dilation(dilation)
-                            .set_name("conv3d_fp8");
+                            .set_name("conv3d_fp8")
+                            .set_compute_data_type(fe::DataType_t::FAST_FLOAT_FOR_FP8);
 
     auto conv_output_fp8 = ctx->graph->conv_fprop(ctx->x_attr, ctx->w_attr, conv_options);
 
