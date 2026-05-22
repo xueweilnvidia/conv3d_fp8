@@ -40,7 +40,7 @@ setup(
     name="conv3d-fp8",
     version="0.1.0",
     description="Conv3d FP8 wrapper and CUDA extension",
-    py_modules=["conv3d_fp8", "conv3d_fp8_op"],
+    py_modules=["conv3d_fp8", "conv3d_fp8_op", "conv3d_bf16_op"],
     ext_modules=[
         CUDAExtension(
             name="conv3d_fp8_ext",
@@ -50,7 +50,16 @@ setup(
             libraries=libraries,
             extra_link_args=extra_link_args,
             extra_compile_args={"cxx": ["-O3", "-std=c++17"]},
-        )
+        ),
+        CUDAExtension(
+            name="conv3d_bf16_ext",
+            sources=[str(ROOT / "conv3d_bf16_ext.cpp")],
+            include_dirs=include_dirs,
+            library_dirs=library_dirs,
+            libraries=libraries,
+            extra_link_args=extra_link_args,
+            extra_compile_args={"cxx": ["-O3", "-std=c++17"]},
+        ),
     ],
     cmdclass={"build_ext": BuildExtension},
 )
