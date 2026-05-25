@@ -35,8 +35,8 @@ def main():
     weight_bf16 = torch.randn(k, c, kt, kh, kw, dtype=torch.bfloat16, device="cuda").to(
         memory_format=torch.channels_last_3d
     )
-    # bias_bf16 = torch.randn(k, dtype=torch.bfloat16, device="cuda")
-    bias_bf16 = None
+    bias_bf16 = torch.randn(k, dtype=torch.bfloat16, device="cuda")
+    # bias_bf16 = None
 
     op = conv3d_bf16_op.init(
         x_shape=input_bf16.shape,
@@ -45,7 +45,7 @@ def main():
         padding=padding,
         stride=stride,
         dilation=dilation,
-        with_bias=False,
+        with_bias=True,
     )
 
     warmup_iters = 5

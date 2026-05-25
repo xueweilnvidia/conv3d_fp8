@@ -249,7 +249,7 @@ int64_t conv3d_bf16_init(
 
     ctx->graph = std::make_shared<fe::graph::Graph>();
     ctx->graph->set_io_data_type(fe::DataType_t::BFLOAT16)
-        .set_intermediate_data_type(fe::DataType_t::BFLOAT16)
+        .set_intermediate_data_type(fe::DataType_t::FLOAT)
         .set_compute_data_type(fe::DataType_t::FLOAT);
 
     ctx->x_attr = ctx->graph->tensor(
@@ -280,7 +280,7 @@ int64_t conv3d_bf16_init(
             fe::graph::Tensor_attributes()
                 .set_name("bias")
                 .set_dim({1, ctx->k, 1, 1, 1})
-                .set_stride({ctx->k, 1, 1, 1, 1})
+                .set_stride({ctx->k, 1, ctx->k, ctx->k, ctx->k})
                 .set_data_type(fe::DataType_t::BFLOAT16));
         auto bias_options = fe::graph::Pointwise_attributes().set_mode(fe::PointwiseMode_t::ADD);
         ctx->y_attr = ctx->graph->pointwise(conv_output, ctx->bias_attr, bias_options);
